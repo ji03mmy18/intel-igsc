@@ -109,12 +109,23 @@ jobs:
           repository: intel/igsc
           ref: ${{ env.IGSC_REF }}
 
+      - name: Setup Ninja
+        uses: seanmiddleditch/gha-setup-ninja@v4
+
+      - name: Setup MSVC toolchain
+        # 不硬寫死 Visual Studio 版本號（例如 "17 2022"）：runner 映像檔內建的 VS
+        # 版本會隨時間更新，硬寫死的話版本一換就抓不到對應實例而失敗。
+        # 改用這個 action 自動偵測目前 runner 上「不管是哪一版」的 VS，
+        # 把 cl.exe / link.exe 等工具鏈放進 PATH，搭配 Ninja 生成器編譯。
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Configure
-        # BUILD_SHARED_LIBS=OFF：同樣改成靜態連結，避免還要額外攜帶 igsc.dll
-        run: cmake -G "Visual Studio 17 2022" -S . -B builddir -DBUILD_SHARED_LIBS=OFF
+        # BUILD_SHARED_LIBS=OFF：改成靜態連結，避免還要額外攜帶 igsc.dll
+        # （Windows 沒有 Linux 那種缺少靜態版系統函式庫的問題，這裡可以放心用）
+        run: cmake -G Ninja -S . -B builddir -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF
 
       - name: Build
-        run: cmake --build builddir --config Release
+        run: ninja -v -C builddir
 
       - name: Package
         shell: pwsh
@@ -123,7 +134,6 @@ jobs:
           New-Item -ItemType Directory -Force -Path $pkgName | Out-Null
           # 靜態連結後理論上只會產生 igsc.exe，這裡仍用 -Include igsc.dll 保底，
           # 若編譯出來還是有 .dll，代表沒有完全靜態化，執行時需連同 .dll 一起放
-          # 實際輸出路徑請以編譯 log 為準，不同版本可能落在 builddir\src\Release 或 builddir\Release
           Get-ChildItem -Recurse -Include igsc.exe,igsc.dll -Path builddir | Copy-Item -Destination $pkgName
           Compress-Archive -Path "$pkgName\*" -DestinationPath "$pkgName.zip"
           echo "PKG_PATH=$pkgName.zip" >> $env:GITHUB_ENV
