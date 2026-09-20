@@ -66,9 +66,18 @@ jobs:
           sudo apt-get install -y libudev-dev build-essential cmake ninja-build
 
       - name: Configure
-        # BUILD_SHARED_LIBS=OFF：把 libigsc 改成靜態連結進 igsc 執行檔，
-        # 這樣就不需要另外攜帶 libigsc.so，單一檔案就能執行
-        run: cmake -G Ninja -S . -B builddir -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF
+        # 注意：BUILD_SHARED_LIBS=OFF 在 Linux 上行不通——igsc 的 CMake 只要關掉這個選項，
+        # 就會無條件加上 -static-libgcc -static，變成要求「完全靜態連結」，
+        # 但 Ubuntu 的 libudev-dev 只有 libudev.so、沒有 libudev.a，連結器會直接失敗。
+        # 所以這裡維持預設的動態連結（BUILD_SHARED_LIBS=ON），
+        # 改用 CMAKE_INSTALL_RPATH=$ORIGIN，讓 igsc 執行檔在執行時自動去
+        # 「自己所在的資料夾」找 libigsc.so，不需要另外設定 LD_LIBRARY_PATH，
+        # 只要把 igsc 和 libigsc.so* 放在同一個資料夾就能直接執行。
+        run: |
+          cmake -G Ninja -S . -B builddir \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DCMAKE_INSTALL_RPATH='$ORIGIN'
 
       - name: Build
         run: ninja -v -C builddir
@@ -78,10 +87,7 @@ jobs:
           PKG_NAME="igsc-${IGSC_REF}-linux-x64"
           mkdir -p "$PKG_NAME"
           cp builddir/src/igsc "$PKG_NAME/"
-          # 若把上面的 -DBUILD_SHARED_LIBS=OFF 拿掉、想保留動態連結版本，
-          # 就需要取消下一行的註解，把 libigsc.so 一起打包，
-          # 且執行時要跟 igsc 放在同一目錄並設定 LD_LIBRARY_PATH=. 或安裝到系統 lib 路徑
-          # cp builddir/lib/libigsc.so* "$PKG_NAME/" || true
+          cp builddir/lib/libigsc.so* "$PKG_NAME/"
           tar czvf "${PKG_NAME}.tar.gz" "$PKG_NAME"
           echo "PKG_PATH=${PKG_NAME}.tar.gz" >> "$GITHUB_ENV"
 
