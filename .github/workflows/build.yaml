@@ -163,7 +163,7 @@ jobs:
           # 這是在「你自己這個 repo」建立/更新的 Release，tag 名稱沿用解析出來的 igsc 版本號，
           # 方便和 intel/igsc 原版對照；重跑同版本時會更新同一個 Release
           tag_name: ${{ env.IGSC_REF }}
-          name: igsc ${{ env.IGSC_REF }} (自行編譯)
+          name: igsc ${{ env.IGSC_REF }} (Self-Build)
           files: |
             igsc-${{ env.IGSC_REF }}-linux-x64/igsc-${{ env.IGSC_REF }}-linux-x64.tar.gz
             igsc-${{ env.IGSC_REF }}-windows-x64/igsc-${{ env.IGSC_REF }}-windows-x64.zip
