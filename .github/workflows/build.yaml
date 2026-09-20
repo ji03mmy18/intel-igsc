@@ -1,0 +1,149 @@
+name: Build igsc
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'intel/igsc 的 Release 版本 tag（例如 v0.9.6）。留空或填 latest 則自動抓最新 Release'
+        required: false
+        default: 'latest'
+        type: string
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  resolve-version:
+    runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.resolve.outputs.ref }}
+    steps:
+      - name: Resolve target intel/igsc version
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          EVENT_NAME: ${{ github.event_name }}
+          PUSHED_TAG: ${{ github.ref_name }}
+        run: |
+          set -e
+
+          if [ "$EVENT_NAME" = "push" ]; then
+            REF="$PUSHED_TAG"
+          else
+            REF="${INPUT_VERSION:-latest}"
+          fi
+
+          if [ "$REF" = "latest" ]; then
+            REF=$(gh api repos/intel/igsc/releases/latest --jq .tag_name)
+            echo "已自動解析為最新 Release: $REF"
+          fi
+
+          # 驗證這個 tag 在 intel/igsc 是否真實存在，避免打錯版本號還繼續往下編譯
+          if ! git ls-remote --exit-code --tags https://github.com/intel/igsc.git "refs/tags/${REF}" > /dev/null; then
+            echo "::error::在 intel/igsc 找不到 tag「${REF}」，請確認版本號是否正確（可參考 https://github.com/intel/igsc/releases）"
+            exit 1
+          fi
+
+          echo "將編譯 intel/igsc 版本: $REF"
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+
+  build-linux:
+    needs: resolve-version
+    runs-on: ubuntu-latest
+    env:
+      IGSC_REF: ${{ needs.resolve-version.outputs.ref }}
+    steps:
+      - name: Checkout igsc source
+        uses: actions/checkout@v4
+        with:
+          repository: intel/igsc
+          ref: ${{ env.IGSC_REF }}
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev build-essential cmake ninja-build
+
+      - name: Configure
+        # BUILD_SHARED_LIBS=OFF：把 libigsc 改成靜態連結進 igsc 執行檔，
+        # 這樣就不需要另外攜帶 libigsc.so，單一檔案就能執行
+        run: cmake -G Ninja -S . -B builddir -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF
+
+      - name: Build
+        run: ninja -v -C builddir
+
+      - name: Package
+        run: |
+          PKG_NAME="igsc-${IGSC_REF}-linux-x64"
+          mkdir -p "$PKG_NAME"
+          cp builddir/src/igsc "$PKG_NAME/"
+          # 若把上面的 -DBUILD_SHARED_LIBS=OFF 拿掉、想保留動態連結版本，
+          # 就需要取消下一行的註解，把 libigsc.so 一起打包，
+          # 且執行時要跟 igsc 放在同一目錄並設定 LD_LIBRARY_PATH=. 或安裝到系統 lib 路徑
+          # cp builddir/lib/libigsc.so* "$PKG_NAME/" || true
+          tar czvf "${PKG_NAME}.tar.gz" "$PKG_NAME"
+          echo "PKG_PATH=${PKG_NAME}.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: igsc-${{ env.IGSC_REF }}-linux-x64
+          path: ${{ env.PKG_PATH }}
+
+  build-windows:
+    needs: resolve-version
+    runs-on: windows-latest
+    env:
+      IGSC_REF: ${{ needs.resolve-version.outputs.ref }}
+    steps:
+      - name: Checkout igsc source
+        uses: actions/checkout@v4
+        with:
+          repository: intel/igsc
+          ref: ${{ env.IGSC_REF }}
+
+      - name: Configure
+        # BUILD_SHARED_LIBS=OFF：同樣改成靜態連結，避免還要額外攜帶 igsc.dll
+        run: cmake -G "Visual Studio 17 2022" -S . -B builddir -DBUILD_SHARED_LIBS=OFF
+
+      - name: Build
+        run: cmake --build builddir --config Release
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $pkgName = "igsc-${env:IGSC_REF}-windows-x64"
+          New-Item -ItemType Directory -Force -Path $pkgName | Out-Null
+          # 靜態連結後理論上只會產生 igsc.exe，這裡仍用 -Include igsc.dll 保底，
+          # 若編譯出來還是有 .dll，代表沒有完全靜態化，執行時需連同 .dll 一起放
+          # 實際輸出路徑請以編譯 log 為準，不同版本可能落在 builddir\src\Release 或 builddir\Release
+          Get-ChildItem -Recurse -Include igsc.exe,igsc.dll -Path builddir | Copy-Item -Destination $pkgName
+          Compress-Archive -Path "$pkgName\*" -DestinationPath "$pkgName.zip"
+          echo "PKG_PATH=$pkgName.zip" >> $env:GITHUB_ENV
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: igsc-${{ env.IGSC_REF }}-windows-x64
+          path: ${{ env.PKG_PATH }}
+
+  release:
+    needs: [resolve-version, build-linux, build-windows]
+    runs-on: ubuntu-latest
+    env:
+      IGSC_REF: ${{ needs.resolve-version.outputs.ref }}
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Create GitHub Release with binaries
+        uses: softprops/action-gh-release@v2
+        with:
+          # 這是在「你自己這個 repo」建立/更新的 Release，tag 名稱沿用解析出來的 igsc 版本號，
+          # 方便和 intel/igsc 原版對照；重跑同版本時會更新同一個 Release
+          tag_name: ${{ env.IGSC_REF }}
+          name: igsc ${{ env.IGSC_REF }} (自行編譯)
+          files: |
+            igsc-${{ env.IGSC_REF }}-linux-x64/igsc-${{ env.IGSC_REF }}-linux-x64.tar.gz
+            igsc-${{ env.IGSC_REF }}-windows-x64/igsc-${{ env.IGSC_REF }}-windows-x64.zip
