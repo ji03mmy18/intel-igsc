@@ -147,6 +147,10 @@ jobs:
   release:
     needs: [resolve-version, build-linux, build-windows]
     runs-on: ubuntu-latest
+    # 預設的 GITHUB_TOKEN 常常只有唯讀權限，沒有這行會在建立 Release 時
+    # 收到 403 "Resource not accessible by integration"
+    permissions:
+      contents: write
     env:
       IGSC_REF: ${{ needs.resolve-version.outputs.ref }}
     steps:
